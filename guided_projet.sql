@@ -1,23 +1,27 @@
 /* ============================================================================
-   Prerequis : bibliotheque_plus.sql execute une fois.
+    Projet PL/pgSQL - Bibliotheque+  (M1 Informatique - Lyon 2, 2026-2027)
+   PARTIE 1 : fonctions et trigger guides
+   Binome : Zakaria Boutarfa / Chahid Lafdel
+Prerequis : bibliotheque_plus.sql execute une fois.
+Conventions de noms utilisés: parametres = p_..., variables = v_..., curseurs = cur_...
  */ 
 
 CREATE OR REPLACE FUNCTION ajouter_auteur(p_nom TEXT, p_pays TEXT DEFAULT NULL)
 RETURNS INT
 LANGUAGE plpgsql
 AS $$
-DECLARE
+DECLARE											
     v_id INT;
 BEGIN
-    IF p_nom IS NULL or btrim(p_nom) ='' THEN
+    IF p_nom IS NULL or btrim(p_nom) ='' THEN				-- Si nom d'auteur NULL ou chaîne comportant des espaces (qu'on enlève avec btrim()) on lève une exception.
         RAISE EXCEPTION 'ajouter_auteur : le nom de l''auteur est obligatoire';
     END IF;
 	IF length(btrim(p_nom)) > 60 THEN
-        RAISE EXCEPTION 'ajouter_auteur : nom trop long (% caracteres, maximum 60)',
+        RAISE EXCEPTION 'ajouter_auteur : nom trop long (% caracteres, maximum 60)',	--Choix arbitraire de nom avec 60 characters, pour éviter les 
                         length(btrim(p_nom));
     END IF;
 
-    INSERT INTO auteur (nom, pays)
+    INSERT INTO auteur (nom, pays)	--Si p_nom valid insertion et retourne l'auteur id de la nouvelle entrée
     VALUES (btrim(p_nom), p_pays)
     RETURNING id_auteur INTO v_id;
     RETURN v_id;
@@ -26,7 +30,8 @@ $$;
 
 
 /* ----------------------------------------------------------------------------
- 
+ Dans la fonction ajouter_livre nb_exemplaires doit etre >= 1 (un livre sans exemplaire n'est pas
+   ajoute, meme si le CHECK de la table accepte 0).
    ---------------------------------------------------------------------------- */
 CREATE OR REPLACE FUNCTION ajouter_livre(
     p_titre          TEXT,
@@ -41,7 +46,7 @@ DECLARE
     v_id INT;
 BEGIN
     IF p_titre IS NULL OR btrim(p_titre) = '' THEN
-        RAISE EXCEPTION 'ajouter_livre : le titre est obligatoire';
+        RAISE EXCEPTION 'ajouter_livre : le titre est obligatoire';	--Nettoyage d'entrées NULL ou vides
     END IF;
 
    
@@ -63,7 +68,8 @@ BEGIN
     END IF;
 
     INSERT INTO livre (titre, id_auteur, id_categorie, annee, nb_exemplaires)
-    VALUES (btrim(p_titre), p_id_auteur, p_id_categorie, p_annee, p_nb_exemplaires)
+    VALUES (btrim(p_titre), p_id_auteur, p_id_categorie, p_annee, p_nb_exemplaires) /* On valide l'ajout d'un live, on 
+															n'insère que si le titre du livre est valide, le nombres d'éxemplaires non null et cohérent, et que l'auteur et la catégorie existent */ 
     RETURNING id_livre INTO v_id;
 
     RETURN v_id;
@@ -84,7 +90,7 @@ BEGIN
                         p_id_categorie;
     END IF;
 
-    SELECT count(*) INTO v_nb
+    SELECT count(*) INTO v_nb -- le nombres de livres dans une catégories et non le nombre d'exemplaires
     FROM livre
     WHERE id_categorie = p_id_categorie;
 
@@ -99,16 +105,17 @@ RETURNS INT
 LANGUAGE plpgsql
 AS $$
 DECLARE
-    enregistrement  RECORD;
+    enregistrement  RECORD; 	-- variable qui recoit chaque ligne du SELECT (titre, annee)
     v_nb INT := 0;
 BEGIN
+	-- curseur implicite : PostgreSQL ouvre, lit et ferme le curseur.
     FOR enregistrement IN
         SELECT titre, annee
         FROM   livre
         WHERE  annee < 2000
         ORDER  BY annee, titre
     LOOP
-        RAISE NOTICE '% (%)', enregistrement.titre, enregistrement.annee;
+        RAISE NOTICE '% (%)', enregistrement.titre, enregistrement.annee;	-- Simple affichage de message (non error)
         v_nb := v_nb + 1;
     END LOOP;
 
@@ -172,17 +179,21 @@ BEGIN
     -- SQL met en minuscules les noms non quotes (FROM Livre = FROM livre) :
     -- on reproduit ce comportement pour que 'Livre' et 'LIVRE' fonctionnent
     v_table := lower(btrim(p_table_name));
-
+	-- to_regclass renvoie NULL si la table n'existe pas : message clair au lieu d'une erreur systeme
     IF to_regclass(format('%I', v_table)) IS NULL THEN
         RAISE EXCEPTION 'compter_elements : la table "%" n''existe pas', p_table_name;
     END IF;
-
+	-- SQL dynamique : %I met le nom entre guillemets ce qui protège contre les injections.
     EXECUTE format('SELECT count(*) FROM %I', v_table) INTO v_nb;
 
     RETURN v_nb;
 END;
 $$;
-
+/* Refuse l'insertion d'un emprunt en cours quand le livre n'a plus d'exemplaire
+   disponible, au sens du sujet : nb_exemplaires - (emprunts en cours) >= 1,
+   un emprunt etant en cours quand date_retour IS NULL.
+   Un trigger = 2 morceaux : la fonction (RETURNS TRIGGER) puis CREATE TRIGGER.
+   Limite connue : seul l'INSERT est controle (voir rapport). */	
 
 CREATE OR REPLACE FUNCTION trg_verif_disponibilite()
 RETURNS TRIGGER
